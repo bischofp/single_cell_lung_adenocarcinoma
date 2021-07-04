@@ -1,0 +1,390 @@
+---
+title: "lung_kim_et_al"
+author: "Philip Bischoff"
+date: "31 8 2020"
+output: html_document
+
+params: 
+  nFeature_lower: 500
+  nFeature_upper: 10000
+  nCount_lower: 1000
+  nCount_upper: 100000
+  pMT_lower: 0
+  pMT_upper: 30
+  pHB_lower: 0
+  pHB_upper: 5
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, cache = FALSE, warning = FALSE, out.width = "120%")
+
+### load libraries
+library(Seurat)
+library(dplyr)
+library(reticulate)
+library(sctransform)
+library(cowplot)
+library(ggplot2)
+library(viridis)
+library(tidyr)
+library(magrittr)
+library(reshape2)
+library(readxl)
+library(readr)
+library(stringr)
+library(progeny)
+library(scales)
+library(data.table)
+library(Matrix)
+library(tibble)
+library(gplots)
+library(RColorBrewer)
+
+theme_set(theme_cowplot())
+
+nFeature_lower <- params$nFeature_lower
+nFeature_upper <- params$nFeature_upper
+nCount_lower <- params$nCount_lower
+nCount_upper <- params$nCount_upper
+pMT_lower <- params$pMT_lower
+pMT_upper <- params$pMT_upper
+pHB_lower <- params$pHB_lower
+pHB_upper <- params$pHB_upper
+
+```
+
+```{r}
+
+#load data from Kim et al.
+
+kim_cell_type <- fread(file = "cellranger/Kim_et_al/GSE131907_Lung_Cancer_cell_annotation.txt", sep = "\t") %>% filter(Sample_Origin %in% c("tLung", "nLung"))
+
+kim_cell_type_tumor <- fread(file = "cellranger/Kim_et_al/GSE131907_Lung_Cancer_cell_annotation.txt", sep = "\t") %>% filter(Sample_Origin == "tLung")
+
+kim_cell_type_normal <- fread(file = "cellranger/Kim_et_al/GSE131907_Lung_Cancer_cell_annotation.txt", sep = "\t") %>% filter(Sample_Origin == "nLung")
+
+kim_raw_tumor <- fread(file = "cellranger/Kim_et_al/GSE131907_Lung_Cancer_raw_UMI_matrix.txt", sep ="\t", verbose = T, select = c("Index", kim_cell_type_tumor$Index))
+
+kim_raw_normal <- fread(file = "cellranger/Kim_et_al/GSE131907_Lung_Cancer_raw_UMI_matrix.txt", sep ="\t", verbose = T, select = c("Index", kim_cell_type_normal$Index))
+
+```
+
+```{r}
+
+#generate matrix and seurat object
+
+kim_data_tumor <- unlist(kim_raw_tumor[, -1], use.names = F)
+kim_data_tumor <- Matrix(kim_data_tumor, nrow = length(kim_raw_tumor$Index), ncol = (length(colnames(kim_raw_tumor))-1))
+
+rownames(kim_data_tumor) <- kim_raw_tumor$Index
+colnames(kim_data_tumor) <- colnames(kim_raw_tumor)[-1]
+
+kim_obj_tumor <- CreateSeuratObject(kim_data_tumor)
+
+
+kim_data_normal <- unlist(kim_raw_normal[, -1], use.names = F)
+kim_data_normal <- Matrix(kim_data_normal, nrow = length(kim_raw_normal$Index), ncol = (length(colnames(kim_raw_normal))-1))
+
+rownames(kim_data_normal) <- kim_raw_normal$Index
+colnames(kim_data_normal) <- colnames(kim_raw_normal)[-1]
+
+kim_obj_normal <- CreateSeuratObject(kim_data_normal)
+
+
+kim_obj <- merge(kim_obj_tumor, kim_obj_normal)
+
+kim_data_normal <- NULL
+kim_data_tumor <- NULL
+```
+
+```{r}
+
+#filtering
+kim_obj <- PercentageFeatureSet(kim_obj, pattern = "^MT-", col.name = "pMT")
+kim_obj <- PercentageFeatureSet(kim_obj, pattern = "^HBA|^HBB", col.name = "pHB")
+
+VlnPlot(kim_obj, features = c("nFeature_RNA", "nCount_RNA", "pMT"), pt.size = 0, group.by = "orig.ident", ncol = 5, log = F)
+
+kim_obj_filtered <- subset(kim_obj, subset = nFeature_RNA > nFeature_lower & nFeature_RNA < nFeature_upper & nCount_RNA > nCount_lower & nCount_RNA < nCount_upper & pMT < pMT_upper & pHB < pHB_upper)
+
+```
+
+```{r}
+
+#normalization
+
+kim_obj_filtered <- SCTransform(kim_obj_filtered, verbose = T, vars.to.regress = c("nCount_RNA", "pMT"), conserve.memory = T)
+
+saveRDS(kim_obj_filtered, file = "seurat_objects/kim_scTransform.RDS")
+
+```
+
+```{r}
+
+#add annotation
+
+rownames(kim_cell_type) <- kim_cell_type$Index
+kim_obj_filtered <- AddMetaData(kim_obj_filtered, kim_cell_type)
+
+
+
+### add cell cycle, cc.genes loaded with Seurat
+
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+
+score_cc <- function(kim_obj_filtered) {
+  kim_obj_filtered <- CellCycleScoring(kim_obj_filtered, s.genes, g2m.genes)
+  kim_obj_filtered@meta.data$CC.Diff <- kim_obj_filtered@meta.data$S.Score - kim_obj_filtered@meta.data$G2M.Score
+  return(kim_obj_filtered)
+}
+
+kim_obj_filtered <- score_cc(kim_obj_filtered)
+
+
+
+#add clinical metadata
+
+metatable <- read_excel("metadata/GSE131907_Lung_Cancer_Feature_Summary.xlsx", skip = 2)
+
+metadata <- FetchData(kim_obj_filtered, "Sample")
+metadata$cell_id <- rownames(metadata)
+metatable$Sample <- metatable$Samples
+metadata <- left_join(x = metadata, y = metatable, by = "Sample")
+rownames(metadata) <- metadata$cell_id
+
+kim_obj_filtered <- AddMetaData(kim_obj_filtered, metadata = metadata)
+
+```
+
+```{r}
+
+saveRDS(kim_obj_filtered, file = "seurat_objects/kim_all.RDS")
+
+```
+
+```{r}
+
+#annotation of main cell types in kim data
+
+kim_obj_filtered <- RunPCA(kim_obj_filtered)
+ElbowPlot(kim_obj_filtered, ndims = 50)
+
+#for (i in c(15, 20)) {
+#  umaptest <- RunUMAP(seu_obj, dims = 1:i, verbose = F)
+#  print(DimPlot(umaptest, reduction = "umap", group.by = "orig.ident") + labs(title = paste0(i, " dimensions")))
+#  print(FeaturePlot(umaptest, features = c("EPCAM", "PTPRC"), sort.cell = T))
+#  print(FeaturePlot(umaptest, features = c("MARCO", "KIT"), sort.cell = T))
+#  print(FeaturePlot(umaptest, features = c("FOXJ1", "AGER"), sort.cell = T))
+#  print(FeaturePlot(umaptest, features = c("JCHAIN", "VWF"), sort.cell = T))
+#  remove(umaptest)
+#}
+
+kim_obj_filtered <- RunUMAP(kim_obj_filtered, dims = 1:15, verbose = T)
+kim_obj_filtered <- FindNeighbors(kim_obj_filtered, dims = 1:15)
+
+for (i in c(0.2, 0.3, 0.4, 0.5, 1, 2)) {
+  kim_obj_filtered <- FindClusters(kim_obj_filtered, resolution = i)
+  print(DimPlot(kim_obj_filtered, reduction = "umap") + labs(title = paste0("resolution: ", i)))
+}
+
+DimPlot(kim_obj_filtered, group.by = "Cell_type")
+DimPlot(kim_obj_filtered, group.by = "SCT_snn_res.0.2", label = T)
+```
+
+# Main cell type annotation
+
+```{r main cell type markers}
+
+mainmarkers <- c("PECAM1", "VWF", "ACTA2", "JCHAIN", "MS4A1", "PTPRC", "CD68", "KIT", "EPCAM", "CDH1", "KRT7", "KRT19")
+
+DotPlot(kim_obj_filtered, features = mainmarkers, group.by = "SCT_snn_res.0.2") + 
+  coord_flip() + 
+  scale_color_viridis()
+ggsave2("DotPlot_mainmarkers.png", path = "output/annotation", width = 30, height = 8, units = "cm")
+
+DimPlot(kim_obj_filtered, group.by = "SCT_snn_res.0.2", label = T, label.size = 5)
+#ggsave2("DimPlot_all_clusters.png", path = "output/annotation", width = 20, height = 20, units = "cm")
+
+Idents(kim_obj_filtered) <- kim_obj_filtered$SCT_snn_res.0.2
+annotation_curated_main <- read_excel("curated_annotation/curated_annotation_kim_main.xlsx")
+new_ids_main <- annotation_curated_main$main_cell_type
+names(new_ids_main) <- levels(kim_obj_filtered)
+kim_obj_filtered <- RenameIdents(kim_obj_filtered, new_ids_main)
+kim_obj_filtered@meta.data$main_cell_type <- Idents(kim_obj_filtered)
+
+```
+
+```{r subset and rescale}
+
+#saveRDS(kim_obj_filtered, file = "seurat_objects/all.RDS")
+
+Idents(kim_obj_filtered) <- kim_obj_filtered@meta.data$main_cell_type
+
+kim_epi_new_annotation <- subset(kim_obj_filtered, idents = "Epithelial")
+kim_imm_new_annotation <- subset(kim_obj_filtered, idents = "Immune")
+kim_str_new_annotation <- subset(kim_obj_filtered, idents = "Stromal")
+
+remove(kim_obj_filtered)
+
+kim_epi_new_annotation <- ScaleData(kim_epi_new_annotation)
+kim_imm_new_annotation <- ScaleData(kim_imm_new_annotation)
+kim_str_new_annotation <- ScaleData(kim_str_new_annotation)
+
+```
+
+```{r subclustering, include=FALSE}
+
+kim_epi_new_annotation <- RunPCA(kim_epi_new_annotation)
+ElbowPlot(kim_epi_new_annotation)
+
+#for (i in c(10, 15, 20, 25)){
+#  umaptest <- RunUMAP(epi, dims = 1:i, verbose = F)
+#  print(DimPlot(umaptest, reduction = "umap", group.by = "patient_id", split.by = "tissue_type") + labs(title = paste0(i, "dimensions")))
+#  remove(umaptest)
+#}
+
+kim_epi_new_annotation <- RunUMAP(kim_epi_new_annotation, dims = 1:20)
+kim_epi_new_annotation <- FindNeighbors(kim_epi_new_annotation, dims = 1:20)
+for (i in c(0.2, 0.3, 0.4, 0.5, 1, 2)) {
+  kim_epi_new_annotation <- FindClusters(kim_epi_new_annotation, resolution = i)
+  print(DimPlot(kim_epi_new_annotation, reduction = "umap", label = T) + labs(title = paste0("resolution: ", i)))
+}
+
+Idents(kim_epi_new_annotation) <- kim_epi_new_annotation@meta.data$SCT_snn_res.1
+
+
+
+DimPlot(kim_epi_new_annotation, group.by = "SCT_snn_res.1", label = T, repel = T, split.by = "Sample_Origin")
+#ggsave2("DimPlot_epi_clusters.png", path = "output/fig2", width = 30, height = 15, units = "cm")
+
+### compare proportion of cells in a cluster to all epithelial cells for tumor and normal separately, clusters overrepresented in normal samples are supposed to be cell of normal lung parenchyma, all other clusters are supposed to be tumor cells
+
+epi_clusters <- FetchData(kim_epi_new_annotation, vars = c("SCT_snn_res.1", "Sample_Origin"))
+
+count_tumor <- epi_clusters %>% filter(Sample_Origin == "tLung") %>% count() %>% as.numeric()
+count_normal <- epi_clusters %>% filter(Sample_Origin == "nLung") %>% count() %>% as.numeric()
+
+epi_counts <- epi_clusters %>% group_by(Sample_Origin) %>% count(SCT_snn_res.1)
+proportion_tumor <- epi_counts %>% filter(Sample_Origin == "tLung") %>% mutate(proportion = n/count_tumor)
+proportion_normal <- epi_counts %>% filter(Sample_Origin == "nLung") %>% mutate(proportion = n/count_normal)
+
+proportion_epi <- full_join(proportion_normal, proportion_tumor, by = "SCT_snn_res.1") %>% 
+  mutate(proportion.x = ifelse(is.na(proportion.x), 0,  proportion.x)) %>%  
+  mutate(proportion.y = ifelse(is.na(proportion.y), 0,  proportion.y)) %>%
+  mutate(Sample_Origin.x = "nLung") %>%
+  mutate(Sample_Origin.y = "tLung") %>%
+  mutate(cluster_type = ifelse(proportion.x > proportion.y, "nLung", "tLung"))
+
+cluster_type_data <- left_join(x = epi_clusters, y = proportion_epi, by = "SCT_snn_res.1")
+rownames(cluster_type_data) <- rownames(epi_clusters)
+
+kim_epi_new_annotation <- AddMetaData(kim_epi_new_annotation, select(cluster_type_data, cluster_type))
+
+
+### Bar plot for figure 2
+
+n1 <- select(proportion_epi, c(Sample_Origin.x, SCT_snn_res.1, proportion.x)) %>%
+  mutate(Sample_Origin = Sample_Origin.x) %>% 
+  mutate(proportion = proportion.x) %>%
+  mutate(Sample_Origin.x = NULL) %>%
+  mutate(proportion.x = NULL)
+t1 <- select(proportion_epi, c(Sample_Origin.y, SCT_snn_res.1, proportion.y)) %>%
+  mutate(Sample_Origin = Sample_Origin.y) %>% 
+  mutate(proportion = proportion.y) %>%
+  mutate(Sample_Origin.y = NULL) %>%
+  mutate(proportion.y = NULL)
+
+proportion_epi2 <- rbind(n1, t1)
+
+ggplot(proportion_epi2, aes(fill = Sample_Origin, y = proportion, x = SCT_snn_res.1)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  scale_fill_manual(values = use_colors)
+
+#ggsave2("BarPlot_proportion_epi.emf", path = "output/fig2", width = 40, height = 20, units = "cm")
+
+DimPlot(kim_epi_new_annotation, group.by = "Sample_Origin")
+DimPlot(kim_epi_new_annotation, group.by = "cluster_type")
+
+```
+
+#At this point, export the seurat objects "kim_str_new_annotation" and "kim_imm_new_annotation" for cell type label transfer using the Python package Scanpy
+
+```{r}
+
+
+
+###epithelial
+
+kim_epi_new_annotation@meta.data$patient_id <- kim_epi_new_annotation@meta.data$Patient.id
+kim_epi_new_annotation@meta.data$tissue_type <- kim_epi_new_annotation@meta.data$Sample_Origin
+kim_epi_new_annotation@meta.data$sample_id <- kim_epi_new_annotation@meta.data$Samples
+kim_epi_new_annotation@meta.data$histo_subtype <- kim_epi_new_annotation@meta.data$Pathology
+
+epi_data <- FetchData(kim_epi_new_annotation, c("tissue_type", "cluster_type"))
+epi_data <- epi_data %>%
+  mutate(tissue_type = ifelse(tissue_type == "tLung", "Tumor", "Normal")) %>%
+  mutate(cluster_type = ifelse(cluster_type == "tLung", "Tumor", "Normal"))
+kim_epi_new_annotation <- AddMetaData(kim_epi_new_annotation, epi_data)
+
+
+
+###imune
+
+cell_type_imm_kim <- read.csv("data/obs_kim_imm.csv")
+rownames(cell_type_imm_kim) <- cell_type_imm_kim$X
+cell_type_imm_kim <- cell_type_imm_kim %>% select(cell_type_imm)
+kim_imm_new_annotation <- AddMetaData(kim_imm_new_annotation, metadata = cell_type_imm_kim)
+
+umap_imm_kim <- read.csv("data/obsm_kim_imm.csv")
+rownames(umap_imm_kim) <- rownames(cell_type_imm_kim)
+umap_imm_kim$UMAP_1 <- umap_imm_kim$X_umap1
+umap_imm_kim$UMAP_2 <- umap_imm_kim$X_umap2
+umap_imm_kim <- umap_imm_kim %>% select(UMAP_1, UMAP_2) %>% as.matrix()
+kim_imm_new_annotation@reductions$umap@cell.embeddings <- umap_imm_kim
+
+kim_imm_new_annotation@meta.data$patient_id <- kim_imm_new_annotation@meta.data$Patient.id
+kim_imm_new_annotation@meta.data$tissue_type <- kim_imm_new_annotation@meta.data$Sample_Origin
+kim_imm_new_annotation@meta.data$sample_id <- kim_imm_new_annotation@meta.data$Samples
+
+imm_data <- FetchData(kim_imm_new_annotation, "tissue_type")
+imm_data <- imm_data %>%
+  mutate(tissue_type = ifelse(tissue_type == "tLung", "Tumor", "Normal"))
+kim_imm_new_annotation <- AddMetaData(kim_imm_new_annotation, imm_data)
+
+
+
+###stromal
+
+cell_type_str_kim <- read.csv("data/obs_kim_str.csv")
+rownames(cell_type_str_kim) <- cell_type_str_kim$X
+cell_type_str_kim <- cell_type_str_kim %>% select(cell_type_str)
+kim_str_new_annotation <- AddMetaData(kim_str_new_annotation, metadata = cell_type_str_kim)
+
+umap_str_kim <- read.csv("data/obsm_kim_str.csv")
+rownames(umap_str_kim) <- rownames(cell_type_str_kim)
+umap_str_kim$UMAP_1 <- umap_str_kim$X_umap1
+umap_str_kim$UMAP_2 <- umap_str_kim$X_umap2
+umap_str_kim <- umap_str_kim %>% select(UMAP_1, UMAP_2) %>% as.matrix()
+kim_str_new_annotation@reductions$umap@cell.embeddings <- umap_str_kim
+
+kim_str_new_annotation@meta.data$patient_id <- kim_str_new_annotation@meta.data$Patient.id
+kim_str_new_annotation@meta.data$tissue_type <- kim_str_new_annotation@meta.data$Sample_Origin
+kim_str_new_annotation@meta.data$sample_id <- kim_str_new_annotation@meta.data$Samples
+
+str_data <- FetchData(kim_str_new_annotation, "tissue_type")
+str_data <- str_data %>%
+  mutate(tissue_type = ifelse(tissue_type == "tLung", "Tumor", "Normal"))
+kim_str_new_annotation <- AddMetaData(kim_str_new_annotation, str_data)
+
+```
+
+```{r}
+
+saveRDS(kim_epi_new_annotation, file = "seurat_objects/kim_epi_anno_final.RDS")
+saveRDS(kim_imm_new_annotation, file = "seurat_objects/kim_imm_anno_final.RDS")
+saveRDS(kim_str_new_annotation, file = "seurat_objects/kim_str_anno_final.RDS")
+
+```
+
+#At this point, proceed to stromal analyses, immune analyses, and correlation analyses as described in Code Ocean capsule
