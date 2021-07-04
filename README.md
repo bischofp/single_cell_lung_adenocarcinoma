@@ -1,4 +1,4 @@
-# Single-cell RNA sequencing
+# Single-cell RNA sequencing of lung adenocarcinomas
 Here you find complementary code used for our paper "Single-cell RNA sequencing reveals distinct tumor microenvironmental patterns in lung adenocarcinoma".
 The main code used to generate the main figures can be found here: https://codeocean.com/capsule/0121060/tree.
 
