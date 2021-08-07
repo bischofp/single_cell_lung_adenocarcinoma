@@ -16,5 +16,5 @@ The main code used to generate the main figures can be found here: https://codeo
 
 ## CellPhoneDB
 1) Run the preprocessing and cell type annotation steps as described here: https://codeocean.com/capsule/0121060/tree
-2) Fetch and normalize gene expression data as described here: XXX
+2) Fetch and normalize gene expression data as described here: lung_CellPhoneDB_normalization.Rmd
 3) Run CellPhoneDB with default parameters and generate figures as described here: lung_CellPhoneDB.R
