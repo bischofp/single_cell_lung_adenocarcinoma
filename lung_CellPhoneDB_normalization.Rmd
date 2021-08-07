@@ -71,34 +71,15 @@ remove(subset_combined)
 
 count_raw1 <- count_raw[,1:20000]
 count_raw2 <- count_raw[,20001:38134]
-#count_raw3 <- count_raw[,40001:55419]
 
 count_norm1 <- apply(count_raw1, 2, function(x) (x/sum(x))*10000)
 count_norm2 <- apply(count_raw2, 2, function(x) (x/sum(x))*10000)
-#count_norm3 <- apply(count_raw3, 2, function(x) (x/sum(x))*10000)
 
 count_norm <- cbind(count_norm1, count_norm2)
 
 write.csv(count_norm, "output/CellPhoneDB/count_norm.csv")
 
 write.csv(count_raw, "output/CellPhoneDB/count_raw.csv")
-
-```
-
-```{r}
-
-count_down <- count_raw
-
-for (i in seq_along(1:ncol(count_down))){
-  repeat{
-    x <- sample(1:nrow(count_down),1)
-    count_down[x,i] <- ifelse(count_down[x,i] > 0, count_down[x,i]-1, count_down[x,i])
-    if(colSums(count_down)[[i]] == 1000){
-      break
-    }
-  print(paste0("i=",i))
-  }
-}
 
 ```
 
