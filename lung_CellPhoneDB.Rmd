@@ -1,0 +1,104 @@
+
+```{r}
+
+library(Seurat)
+library(readr)
+library(tidyverse)
+
+```
+
+```{r}
+
+epi_anno <- readRDS("seurat_objects/epi_anno.RDS")
+epi_tumor <- subset(epi_anno, subset = cluster_type == "Tumor" & tissue_type == "Tumor")
+
+imm_anno <- readRDS("seurat_objects/imm_anno.RDS")
+imm_subset <- subset(imm_anno, subset = cell_type_imm %in% c("CD14_Macrophages1",
+                                                             "CD14_Macrophages2",
+                                                             "Myeloid_Dendritic",
+                                                             "Plasmacytoid_Dendritic",
+                                                             "T_conv1",
+                                                             "T_CD8_1",
+                                                             "T_CD8_2",
+                                                             "NK_cells")
+                     & tissue_type == "Tumor")
+
+str_anno <- readRDS("seurat_objects/str_anno.RDS")
+str_subset <- subset(str_anno, subset = cell_type_str %in% c("Myofibroblast1",
+                                                             "Myofibroblast2")
+                     & tissue_type == "Tumor")
+
+```
+
+```{r}
+
+epi_tumor$cell_type <- epi_tumor$cell_type_epi
+imm_subset$cell_type <- imm_subset$cell_type_imm
+str_subset$cell_type <- str_subset$cell_type_str
+
+subset_combined <- merge(epi_tumor, c(imm_subset, str_subset))
+
+remove(epi_anno)
+remove(epi_tumor)
+remove(imm_anno)
+remove(imm_subset)
+remove(str_anno)
+remove(str_subset)
+
+```
+
+```{r}
+
+# generating meta file
+
+meta_data <- FetchData(subset_combined, vars = c("cell_type", "patient_id"))
+meta_data <- meta_data %>% mutate(pattern = ifelse(patient_id %in% c("p032", "p018", "p019", "p024", "p031", "p033"), "A", "B"))
+meta_data$patient_id <- NULL
+meta_data <- meta_data %>% unite("cell_type", c("cell_type", "pattern"), sep = "_")
+meta_data$cell_id <- rownames(meta_data)
+
+write_csv(meta_data, file = "output/CellPhoneDB/meta_data.csv")
+
+```
+
+```{r}
+
+count_raw <- GetAssayData(object = subset_combined, assay = "RNA", slot = "counts")
+
+#write_csv(as.data.frame(count_raw), file = "output/CellPhoneDB/count_raw.csv")
+remove(subset_combined)
+#count_raw <- read_csv(file = "output/CellPhoneDB/count_raw.csv")
+
+count_raw1 <- count_raw[,1:20000]
+count_raw2 <- count_raw[,20001:38134]
+#count_raw3 <- count_raw[,40001:55419]
+
+count_norm1 <- apply(count_raw1, 2, function(x) (x/sum(x))*10000)
+count_norm2 <- apply(count_raw2, 2, function(x) (x/sum(x))*10000)
+#count_norm3 <- apply(count_raw3, 2, function(x) (x/sum(x))*10000)
+
+count_norm <- cbind(count_norm1, count_norm2)
+
+write.csv(count_norm, "output/CellPhoneDB/count_norm.csv")
+
+write.csv(count_raw, "output/CellPhoneDB/count_raw.csv")
+
+```
+
+```{r}
+
+count_down <- count_raw
+
+for (i in seq_along(1:ncol(count_down))){
+  repeat{
+    x <- sample(1:nrow(count_down),1)
+    count_down[x,i] <- ifelse(count_down[x,i] > 0, count_down[x,i]-1, count_down[x,i])
+    if(colSums(count_down)[[i]] == 1000){
+      break
+    }
+  print(paste0("i=",i))
+  }
+}
+
+```
+
